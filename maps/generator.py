@@ -5,18 +5,84 @@ import math
 import os
 import sys
 
-PRECISION = 0
-MIN_WRITABLE = 0.5
 MAX_WIDTH = 1000
 LEVEL = 12
 
-def project(point):
-    lat = math.radians(point['lat'])
-    lng = math.radians(point['lng'])
-    return {
-        'x': 256 / 2 / math.pi * math.pow(2, LEVEL) * (lng + math.pi),
-        'y': 256 / 2 / math.pi * math.pow(2, LEVEL) * (math.pi - math.log(math.tan(math.pi / 4 + lat / 2))),
-    }
+def adjust_lng(angle):
+    if angle < math.pi:
+        return angle + 2 * math.pi
+    elif angle > math.pi:
+        return angle - 2 * math.pi
+    else:
+        return angle
+
+class NationalAtlas(object):
+    def __init__(self):
+        self.ref_lat = 45
+        self.ref_lng = -100
+
+    def extremes(self, bound):
+        top = self.project({
+            'lat': bound['high']['lat'],
+            'lng': bound['low']['lng'],
+        })
+        left = self.project({
+            'lat': (self.ref_lat + bound['low']['lat']) / 2,
+            'lng': bound['low']['lng'],
+        })
+        bottom = self.project({
+            'lat': bound['low']['lat'],
+            'lng': self.ref_lng,
+        })
+        right = self.project({
+            'lat': (self.ref_lat + bound['low']['lat']) / 2,
+            'lng': bound['high']['lng'],
+        })
+        return ({
+            'x': left['x'],
+            'y': top['y'],
+        }, {
+            'x': right['x'],
+            'y': bottom['y'],
+        })
+
+    def project(self, point):
+        # https://pubs.usgs.gov/bul/1532/report.pdf page 172
+        lat = math.radians(point['lat'])
+        lng = adjust_lng(math.radians(point['lng']))
+        ref_lat = math.radians(self.ref_lat)
+        ref_lng = math.radians(self.ref_lng)
+        delta_lng = adjust_lng(lng - ref_lng)
+
+        # These forumulas are for the sphere, not the ellipsoid, though
+        # National Atlas technically seems to use an ellipsoid. Oh well, USGS
+        # tells us that they don't use the it (page 173.)
+        R = 6370997
+        k_p = math.sqrt(2 / (1 + math.sin(ref_lat) * math.sin(lat) + math.cos(ref_lat) * math.cos(lng) * math.cos(delta_lng)))
+        return {
+                'x': R * k_p * math.cos(lat) * math.sin(delta_lng),
+                'y': -R * k_p * (math.cos(ref_lat) * math.sin(lat) - math.sin(ref_lat) * math.cos(lat) * math.cos(delta_lng)),
+        }
+
+class Mercator(object):
+    def extremes(self, bound):
+        top_left = self.project({
+            'lat': bound['high']['lat'],
+            'lng': bound['low']['lng'],
+        })
+        bottom_right = self.project({
+            'lat': bound['low']['lat'],
+            'lng': bound['high']['lng'],
+        })
+        return (top_left, bottom_right)
+
+    def project(self, point):
+        lat = math.radians(point['lat'])
+        lng = math.radians(point['lng'])
+        return {
+            'x': 256 / 2 / math.pi * math.pow(2, LEVEL) * (lng + math.pi),
+            'y': 256 / 2 / math.pi * math.pow(2, LEVEL) * (math.pi - math.log(math.tan(math.pi / 4 + lat / 2))),
+        }
 
 
 class Generator(object):
@@ -39,9 +105,20 @@ class Generator(object):
         parser = argparse.ArgumentParser()
         parser.add_argument('--crush', action='store_true', required=False)
         parser.add_argument('--exact', action='store_true', required=False)
+        parser.add_argument('--min-writable', default=0.5, required=False, type=float)
+        parser.add_argument('--precision', default=0, required=False, type=int)
+        parser.add_argument('--projection', default='mercator', required=False)
         args = parser.parse_args()
         self.pretty_print = not args.crush
         self.print_exact = args.exact
+        self.min_writable = args.min_writable
+        self.precision = args.precision
+        if args.projection == 'mercator':
+            self.projector = Mercator()
+        elif args.projection == 'national_atlas':
+            self.projector = NationalAtlas()
+        else:
+            raise Exception('Unknown projection {}'.format(args.projection))
 
     def generate(self, source, output_type):
         with open('{}/sources/{}'.format(self.root, source)) as f:
@@ -122,8 +199,7 @@ class Generator(object):
                 if bound['high']['lng'] < shape['bound']['high']['lng']:
                     bound['high']['lng'] = shape['bound']['high']['lng']
 
-            top_left = project(bound['low'])
-            bottom_right = project(bound['high'])
+            (top_left, bottom_right) = self.projector.extremes(bound)
             scale = MAX_WIDTH / (bottom_right['x'] - top_left['x'])
             if scale > 1:
                 scale = 1
@@ -148,7 +224,7 @@ class Generator(object):
                  '<svg viewBox="0 0 {width:g} {height:g}" xmlns="http://www.w3.org/2000/svg">{nl}').format(
                      nl='\n' if self.pretty_print else '',
                      width=scale * (bottom_right['x'] - top_left['x']),
-                     height=scale * (top_left['y'] - bottom_right['y'])))
+                     height=scale * (bottom_right['y'] - top_left['y'])))
 
     def print_shape(self, f, shape, scale, top_left, bottom_right):
         print('writing ' + shape['id'])
@@ -158,7 +234,7 @@ class Generator(object):
 
         f.write('<path {}="{}" d="'.format(self.dest_id_attr, shape['id']))
 
-        cursor = [scale * top_left['x'], scale * bottom_right['y']]
+        cursor = [scale * top_left['x'], scale * top_left['y']]
         for polygon in shape['polygons']:
             cursor = self.print_polygon(f, polygon, scale, cursor)
             if self.pretty_print:
@@ -170,7 +246,7 @@ class Generator(object):
             f.write('"/>')
 
     def print_polygon(self, f, polygon, scale, cursor):
-        projected = project(polygon[0])
+        projected = self.projector.project(polygon[0])
         last = projected
         transformed = {
                 'x': scale * projected['x'] - cursor[0],
@@ -181,19 +257,19 @@ class Generator(object):
         cursor[1] += transformed['y'] + acc['y']
 
         for point in polygon[1:-1]:
-            projected = project(point)
+            projected = self.projector.project(point)
             transformed = {
                     'x': scale * (projected['x'] - last['x']) - acc['x'],
                     'y': scale * (projected['y'] - last['y']) - acc['y'],
             }
-            if abs(transformed['x']) < MIN_WRITABLE and not self.print_exact:
+            if abs(transformed['x']) < self.min_writable and not self.print_exact:
                 acc['x'] = -transformed['x']
                 transformed['x'] = 0
             else:
                 acc['x'] = 0
             last['x'] = projected['x']
 
-            if abs(transformed['y']) < MIN_WRITABLE and not self.print_exact:
+            if abs(transformed['y']) < self.min_writable and not self.print_exact:
                 acc['y'] = -transformed['y']
                 transformed['y'] = 0
             else:
@@ -236,5 +312,5 @@ class Generator(object):
         if self.print_exact:
             return x
         else:
-            return round(x, PRECISION)
+            return round(x, self.precision)
 
