@@ -12,6 +12,8 @@ import { PageMetro } from "./PageMetro"
 import { Page404 } from "./Page404"
 import { Country } from "./UnitedStates";
 import { CountryContext } from "./CountryContext";
+import { Sources } from "./sources/Sources";
+import { SourcesContext } from "./sources/SourcesContext";
 import { Title } from "./Title";
 import { compactTheme } from "./Theme.js";
 import { reverse } from 'named-urls';
@@ -60,7 +62,9 @@ const MainApp = withRouter((props) => {
 
   return (
     <CountryContext.Provider value={country}>
-      <SafeRoutes />
+      <SourcesContext.Provider value={new Sources()}>
+        <SafeRoutes />
+      </SourcesContext.Provider>
     </CountryContext.Provider>
   );
 });

@@ -2,7 +2,6 @@ import routes from "./Routes";
 import { reverse } from 'named-urls';
 import { trimLastDaysData, getDay2DoubleTimeSeries, getGrowthRateTimeSeries } from "./CovidAnalysis";
 import { CountyInfo } from 'covidmodule';
-import { fetchNPRProjectionData } from "./NPRProjection"
 import { fetchTestingDataStates, fetchTestingDataUS } from "./TestingData"
 import { fetchPublicCountyData } from "./PublicAllData"
 
@@ -230,11 +229,6 @@ export class Country extends CovidSummarizable {
     return this.covidRaw_.Summary.Death;
   }
 
-  async projectionsAsync() {
-    let data = await fetchNPRProjectionData();
-    return data.filter(d => d.location_name === "United States of America");
-  }
-
   async testingAsync() {
     return await fetchTestingDataUS();
   }
@@ -397,11 +391,6 @@ export class State extends CovidSummarizable {
 
   population() {
     return CountyInfo.getStatePopulation(this.twoLetterName);
-  }
-
-  async projectionsAsync() {
-    let data = await fetchNPRProjectionData();
-    return data.filter(d => d.location_name === this.name);
   }
 
   stayHomeOrder() {
